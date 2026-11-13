@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 
 import pandas as pd
-from bs4 import BeautifulSoup
 
 DATA = Path(__file__).parent / 'data'
 HTML = DATA / 'scrape_frame_2.html'
@@ -49,6 +48,8 @@ def parse_int(s: str) -> int:
 # 1. 從 HTML 抽 學門 + 13 buckets
 # ───────────────────────────────────────────────
 def extract_table(html_path: Path) -> pd.DataFrame:
+    from bs4 import BeautifulSoup
+
     html = html_path.read_text(encoding='utf-8')
     soup = BeautifulSoup(html, 'html.parser')
 

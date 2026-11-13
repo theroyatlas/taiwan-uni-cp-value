@@ -1,5 +1,7 @@
 # 開發/驗證用，不上 deploy
 __pycache__/
+.venv/
+artifacts/
 *.pyc
 _stream_log.txt
 screenshots/

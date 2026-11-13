@@ -1,109 +1,44 @@
-"""
-Phase 1.4 + 1.5: 整合 quantile + UAC PR + 三分群，做新的分析 + 出圖。
+"""由隨附 CSV 重建原有學門分析；輸出必須指向新的資料夾。
 
-輸入:
-  data/salary_with_quantiles.csv   (學門 × P25/P50/P75/風險指標 etc)
-  data/uac_xuemen_agg.csv          (學門 × 中位錄取分數百分位 etc)
-
-輸出:
-  data/final_dataset_v2.csv        (期末分析主表)
-  fig_p50_scatter.png              (散佈圖, X=PR, Y=P50, error bar=P25-P75)
-  fig_residual_ranking.png         (殘差排名 P50)
-  fig_three_group_p50_box.png      (三分群 P50 boxplot + ANOVA)
-  fig_risk_ranking.png             (風險指標 ranking)
+--no-plots 僅重建資料，不需 matplotlib / seaborn；排名仍是 P50 的 OLS 殘差。
 """
+import argparse
+import json
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy import stats
-from sklearn.linear_model import LinearRegression
+from data_pipeline import DATA, load_and_check
 
-THIS = Path(__file__).parent
-DATA = THIS / 'data'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--data-dir', type=Path, default=DATA)
+parser.add_argument('--output-dir', type=Path, required=True,
+                    help='必須為尚不存在的輸出資料夾，保護原始資料與既有圖片')
+parser.add_argument('--no-plots', action='store_true', help='只重建 CSV，跳過歷史靜態圖')
+args = parser.parse_args()
 
+df_out, report = load_and_check(args.data_dir)
+# 出圖依賴在寫檔前檢查；一般 dashboard / 離線驗證不需要安裝。
+if not args.no_plots:
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from scipy import stats
+
+THIS = args.output_dir.resolve()
+THIS.mkdir(parents=True, exist_ok=False)
+df_out.to_csv(THIS / 'final_dataset_v2.csv', index=False, encoding='utf-8-sig')
+print(json.dumps(report, ensure_ascii=False, indent=2))
+print(f'輸出：{THIS / "final_dataset_v2.csv"}')
+if args.no_plots:
+    raise SystemExit(0)
+
+df = df_out.copy()
 sns.set_theme(style='whitegrid')
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Microsoft YaHei',
                                     'Arial Unicode MS', 'SimHei']
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['axes.unicode_minus'] = False
-
-# ───────────────────────────────────────────────
-# 1. JOIN salary quantiles + UAC PR
-# ───────────────────────────────────────────────
-sal = pd.read_csv(DATA / 'salary_with_quantiles.csv')
-# 去掉 「合計」 row
-sal = sal[sal['學門'] != '合計'].copy()
-
-adm = pd.read_csv(DATA / 'uac_xuemen_agg.csv')
-
-df = adm.merge(
-    sal[['學門', 'employed_n', 'contributors_n', 'mean_salary',
-         'P25', 'P50', 'P75', '風險指標']],
-    on='學門', how='inner')
-print(f'JOIN 後 n = {len(df)} 學門')
-
-
-# ───────────────────────────────────────────────
-# 2. 三分群: 應用 STEM / 基礎 STEM / 人文社科
-# ───────────────────────────────────────────────
-APPLIED_STEM = {
-    '資訊通訊科技學門', '工程及工程業學門', '製造及加工學門',
-    '建築及營建工程學門', '醫藥衛生學門', '衛生及職業衛生服務學門',
-    '運輸服務學門',
-}
-BASIC_STEM = {
-    '物理、化學及地球科學學門', '數學及統計學門', '生命科學學門',
-    '環境學門', '農業學門', '林業學門', '漁業學門', '獸醫學門',
-}
-# 其他 → 人文社科
-
-def classify(x):
-    if x in APPLIED_STEM:
-        return '應用 STEM'
-    if x in BASIC_STEM:
-        return '基礎 STEM'
-    return '人文社科'
-
-df['三分群'] = df['學門'].apply(classify)
-print('\n三分群分布:')
-print(df['三分群'].value_counts().to_string())
-
-
-# ───────────────────────────────────────────────
-# 3. Regression on P50 (replacing W10's mean_salary)
-# ───────────────────────────────────────────────
-x = df['median_pr_pct'].values
-y = df['P50'].astype(float).values
-slope, intercept, r, p, se = stats.linregress(x, y)
+slope, intercept, r, p, se = stats.linregress(df['median_pr_pct'], df['P50'].astype(float))
 r2 = r ** 2
-m = LinearRegression().fit(x.reshape(-1, 1), y)
-df['P50_pred'] = m.predict(x.reshape(-1, 1)).round(0).astype(int)
-df['residual_P50'] = (y - df['P50_pred']).round(0).astype(int)
-
-print(f'\n[Regression on P50]')
-print(f'  slope     = {slope:.2f}, intercept = {intercept:,.0f}')
-print(f'  Pearson r = {r:+.4f}')
-print(f'  R^2       = {r2:.4f}')
-print(f'  p-value   = {p:.4e}')
-
-
-# ───────────────────────────────────────────────
-# 4. Save final_dataset_v2
-# ───────────────────────────────────────────────
-df['short_name'] = df['學門'].str.replace('學門', '')
-cols_out = ['學門', 'short_name', '三分群', 'median_pr_pct',
-            'mean_salary', 'P25', 'P50', 'P75', '風險指標',
-            'P50_pred', 'residual_P50',
-            'dept_count', 'employed_n', 'contributors_n']
-df_out = df[cols_out].sort_values('residual_P50', ascending=False)
-df_out.to_csv(DATA / 'final_dataset_v2.csv', index=False, encoding='utf-8-sig')
-print(f'\n輸出 final_dataset_v2.csv ({len(df_out)} 學門)')
-print(df_out[['short_name', '三分群', 'median_pr_pct',
-              'P25', 'P50', 'P75', '風險指標',
-              'residual_P50']].to_string(index=False))
 
 
 # ───────────────────────────────────────────────
